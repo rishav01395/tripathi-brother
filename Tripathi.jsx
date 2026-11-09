@@ -20,7 +20,8 @@ const INITIAL_SETTINGS = {
   address: "Tikuriya tola Gali number 8, Dali baba road, Satna, Madhya Pradesh - 485001",
   hours: "Monday - Saturday: 8:00 AM - 8:30 PM (Sunday Open for Wholesale)",
   bannerTitle: "Direct Wholesale & Retail Cleaning Solutions in Satna",
-  bannerSubtitle: "Supplying top-grade mops, wipers, brushes, and liquid cleaning supplies across Madhya Pradesh with unmatched quality and pricing."
+  bannerSubtitle: "Supplying top-grade mops, wipers, brushes, and liquid cleaning supplies across Madhya Pradesh with unmatched quality and pricing.",
+  heroImage: "https://images.unsplash.com/photo-1584824486509-112e4181ff6b?w=800&auto=format&fit=crop&q=80"
 };
 
 const INITIAL_CATEGORIES = [
@@ -218,6 +219,50 @@ export default function TripathiBrothersApp() {
     }
     const url = `https://wa.me/91${settings.phone}?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
+  };
+
+  const handleHeroImageUpload = (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast("Please choose an image file.");
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      showToast("Image must be smaller than 12 MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => showToast("Could not read the selected image. Please try again.");
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => showToast("This image could not be opened. Please choose another one.");
+      image.onload = () => {
+        const maxDimension = 1200;
+        const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(image.width * scale);
+        canvas.height = Math.round(image.height * scale);
+
+        const context = canvas.getContext('2d');
+        if (!context) {
+          showToast("Could not process this image. Please try another one.");
+          return;
+        }
+
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        setSettings((previous) => ({
+          ...previous,
+          heroImage: canvas.toDataURL('image/jpeg', 0.75)
+        }));
+        showToast("Hero photo updated and saved in this browser.");
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -419,7 +464,7 @@ export default function TripathiBrothersApp() {
                 <div className="relative mx-auto max-w-md bg-gradient-to-b from-zinc-800 to-zinc-900 p-2 rounded-3xl border border-amber-500/30 shadow-2xl shadow-amber-500/10">
                   <div className="relative h-[380px] rounded-2xl overflow-hidden group">
                     <img 
-                      src="https://images.unsplash.com/photo-1584824486509-112e4181ff6b?w=800&auto=format&fit=crop&q=80" 
+                      src={settings.heroImage || INITIAL_SETTINGS.heroImage}
                       alt="Tripathi Brothers Store" 
                       className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
                     />
@@ -1531,9 +1576,44 @@ export default function TripathiBrothersApp() {
               {adminActiveTab === 'branding' && (
                 <div className="space-y-6 animate-fadeIn bg-[#121212] p-8 rounded-3xl border border-zinc-800">
                   <h2 className="text-xl font-bold text-white">Media & Branding Manager</h2>
-                  <p className="text-xs text-zinc-400">Update store hero banner text and company logo badge in real-time.</p>
+                  <p className="text-xs text-zinc-400">Update the store hero photo and banner text.</p>
 
-                  <div className="space-y-4 max-w-xl pt-4">
+                  <div className="space-y-4 max-w-2xl pt-4">
+                    <div className="space-y-3">
+                      <label className="block text-xs font-medium text-zinc-400">Hero Section Photo</label>
+                      <div className="max-w-sm overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
+                        <img
+                          src={settings.heroImage || INITIAL_SETTINGS.heroImage}
+                          alt="Hero section preview"
+                          className="h-52 w-full object-cover"
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-3">
+                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-zinc-900 px-4 py-3 text-xs font-bold text-zinc-200 border border-zinc-700 hover:border-amber-500 transition">
+                          <Upload className="w-4 h-4" /> Upload Hero Photo
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleHeroImageUpload}
+                            className="hidden"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettings((previous) => ({
+                              ...previous,
+                              heroImage: INITIAL_SETTINGS.heroImage
+                            }));
+                            showToast("Default hero photo restored.");
+                          }}
+                          className="rounded-xl border border-zinc-700 px-4 py-3 text-xs font-bold text-zinc-300 hover:border-amber-500 transition"
+                        >
+                          Restore Default Photo
+                        </button>
+                      </div>
+                      <p className="text-xs text-zinc-500">Choose an image up to 12 MB. It will be resized before saving. Changes are saved in this browser only.</p>
+                    </div>
                     <div>
                       <label className="block text-xs font-medium text-zinc-400 mb-1">Hero Banner Title</label>
                       <input
