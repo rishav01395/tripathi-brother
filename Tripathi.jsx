@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { supabase } from './src/lib/supabase';
 import { 
   ShoppingBag, Store, Phone, MapPin, ShieldCheck, Star, 
   Search, Filter, ArrowUpDown, ChevronRight, MessageCircle, 
@@ -143,6 +144,14 @@ const INITIAL_PRODUCTS = [
   }
 ];
 
+const stableStringify = (value) => JSON.stringify(value, (_key, item) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+  return Object.keys(item).sort().reduce((sorted, key) => {
+    sorted[key] = item[key];
+    return sorted;
+  }, {});
+});
+
 export default function TripathiBrothersApp() {
   // Navigation State
   const [activeTab, setActiveTab] = useState('home'); // 'home' | 'products' | 'categories' | 'contact' | 'admin'
@@ -152,11 +161,6 @@ export default function TripathiBrothersApp() {
   const [settings, setSettings] = useState(() => {
     const saved = localStorage.getItem('tb_settings');
     return saved ? { ...INITIAL_SETTINGS, ...JSON.parse(saved) } : INITIAL_SETTINGS;
-  });
-
-  // Dynamic Admin Password State (Persisted in localStorage)
-  const [adminPin, setAdminPin] = useState(() => {
-    return localStorage.getItem('tb_admin_pin') || '1234';
   });
 
   const [categories, setCategories] = useState(() => {
@@ -180,45 +184,309 @@ export default function TripathiBrothersApp() {
   const [sortBy, setSortBy] = useState('featured'); // 'featured' | 'price-low' | 'price-high' | 'name'
 
   // Admin ERP States
-  const [adminLoggedIn, setAdminLoggedIn] = useState(false);
-  const [adminPinInput, setAdminPinInput] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminUser, setAdminUser] = useState(null);
+  const [adminAuthorized, setAdminAuthorized] = useState(false);
+  const adminLoggedIn = Boolean(adminUser && adminAuthorized);
   const [adminActiveTab, setAdminActiveTab] = useState('overview'); // 'overview' | 'products' | 'categories' | 'branding' | 'settings' | 'sql'
+  const [cloudReady, setCloudReady] = useState(!supabase);
+  const [cloudLoadError, setCloudLoadError] = useState('');
+  const [cloudSaveStatus, setCloudSaveStatus] = useState('saved');
+  const lastCloudContent = useRef({ settings: null, products: null, categories: null });
   
   // Admin Editing States
   const [editingProduct, setEditingProduct] = useState(undefined);
   const [productForm, setProductForm] = useState({ name: '', category: 'Floor Mops', price: '', mrp: '', inStock: true, featured: false, description: '', images: [] });
 
   useEffect(() => {
-    if (localStorage.getItem('tb_hero_image_version') !== '2') {
-      localStorage.setItem('tb_hero_image_version', '2');
-      setSettings((previous) => ({
-        ...previous,
-        heroImage: INITIAL_SETTINGS.heroImage
-      }));
-    }
+    if (!supabase) return undefined;
+
+    let active = true;
+    const authListener = supabase.auth.onAuthStateChange((_event, session) => {
+      if (active) setAdminUser(session?.user || null);
+    });
+
+    const loadSiteContent = async () => {
+      const { data: sessionResult, error: sessionError } = await supabase.auth.getSession();
+      if (!active) return;
+      if (sessionError) {
+        setCloudLoadError(`Could not check the Supabase session: ${sessionError.message}`);
+        setCloudSaveStatus('error');
+      } else {
+        setAdminUser(sessionResult.session?.user || null);
+      }
+
+      const { data, error } = await supabase.from('site_content').select('key, value');
+      if (!active) return;
+      if (error) {
+        setCloudLoadError(`Could not load shared website content: ${error.message}`);
+        setCloudSaveStatus('error');
+        setCloudReady(true);
+        return;
+      }
+
+      const content = Object.fromEntries(data.map((row) => [row.key, row.value]));
+      lastCloudContent.current = {
+        settings: content.settings ? stableStringify(content.settings) : null,
+        products: Array.isArray(content.products) ? stableStringify(content.products) : null,
+        categories: Array.isArray(content.categories) ? stableStringify(content.categories) : null
+      };
+      if (content.settings && typeof content.settings === 'object') {
+        setSettings((previous) => ({ ...previous, ...content.settings }));
+      }
+      if (Array.isArray(content.products)) setProducts(content.products);
+      if (Array.isArray(content.categories)) setCategories(content.categories);
+      setCloudReady(true);
+    };
+
+    loadSiteContent();
+
+    const contentChannel = supabase
+      .channel('public-site-content')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'site_content' }, (payload) => {
+        const row = payload.new;
+        if (!row?.key) return;
+        if (row.key === 'settings' && row.value && typeof row.value === 'object') {
+          lastCloudContent.current.settings = stableStringify(row.value);
+          setSettings((previous) => ({ ...previous, ...row.value }));
+        } else if (row.key === 'products' && Array.isArray(row.value)) {
+          lastCloudContent.current.products = stableStringify(row.value);
+          setProducts(row.value);
+        } else if (row.key === 'categories' && Array.isArray(row.value)) {
+          lastCloudContent.current.categories = stableStringify(row.value);
+          setCategories(row.value);
+        }
+      })
+      .subscribe((status, error) => {
+        if (active && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT')) {
+          setCloudLoadError(`Live updates could not connect${error?.message ? `: ${error.message}` : '.'}`);
+          setCloudSaveStatus('error');
+        }
+      });
+
+    return () => {
+      active = false;
+      authListener.data.subscription.unsubscribe();
+      supabase.removeChannel(contentChannel);
+    };
   }, []);
 
-  // Save to localStorage whenever data changes
   useEffect(() => {
-    localStorage.setItem('tb_settings', JSON.stringify(settings));
-  }, [settings]);
+    if (!supabase || !cloudReady || !adminUser) {
+      setAdminAuthorized(false);
+      return undefined;
+    }
+
+    let active = true;
+    const checkAdminAccess = async () => {
+      const { data, error } = await supabase
+        .from('site_admins')
+        .select('user_id')
+        .eq('user_id', adminUser.id)
+        .maybeSingle();
+
+      if (!active) return;
+      if (error) {
+        setCloudLoadError(`Could not verify admin access: ${error.message}`);
+        setCloudSaveStatus('error');
+        setAdminAuthorized(false);
+        return;
+      }
+      if (!data) {
+        setAdminAuthorized(false);
+        const { error: signOutError } = await supabase.auth.signOut();
+        if (signOutError) setCloudLoadError(`Could not close the unauthorized session: ${signOutError.message}`);
+        return;
+      }
+      setAdminAuthorized(true);
+    };
+
+    checkAdminAccess();
+    return () => {
+      active = false;
+    };
+  }, [adminUser, cloudReady]);
+
+  // Keep a local copy for fallback and sync authenticated changes to shared storage.
+  useEffect(() => {
+    try {
+      localStorage.setItem('tb_settings', JSON.stringify(settings));
+    } catch (error) {
+      showToast(`Could not save this browser's settings copy: ${error.message}`);
+    }
+    if (!supabase || !cloudReady || cloudLoadError || !adminAuthorized) return undefined;
+    if (lastCloudContent.current.settings === stableStringify(settings)) return undefined;
+
+    setCloudSaveStatus('saving');
+    const timeout = window.setTimeout(async () => {
+      try {
+        setCloudSaveStatus('saving');
+        const value = { ...settings };
+        if (value.heroImage?.startsWith('data:image/')) {
+          value.heroImage = await uploadImageData(value.heroImage, 'hero');
+          setSettings((previous) => ({ ...previous, heroImage: value.heroImage }));
+        }
+        await saveCloudRecord('settings', value);
+        lastCloudContent.current.settings = stableStringify(value);
+        setCloudSaveStatus('saved');
+      } catch (error) {
+        setCloudSaveStatus('error');
+        showToast(`Could not sync website settings: ${error.message}`);
+      }
+    }, 500);
+
+    return () => window.clearTimeout(timeout);
+  }, [settings, cloudReady, cloudLoadError, adminAuthorized]);
 
   useEffect(() => {
-    localStorage.setItem('tb_admin_pin', adminPin);
-  }, [adminPin]);
+    try {
+      localStorage.setItem('tb_categories', JSON.stringify(categories));
+    } catch (error) {
+      showToast(`Could not save this browser's category copy: ${error.message}`);
+    }
+    if (!supabase || !cloudReady || cloudLoadError || !adminAuthorized) return undefined;
+    if (lastCloudContent.current.categories === stableStringify(categories)) return undefined;
+
+    setCloudSaveStatus('saving');
+    const timeout = window.setTimeout(async () => {
+      try {
+        setCloudSaveStatus('saving');
+        const value = await uploadImagesInRecords(categories, 'categories');
+        if (value !== categories) setCategories(value);
+        await saveCloudRecord('categories', value);
+        lastCloudContent.current.categories = stableStringify(value);
+        setCloudSaveStatus('saved');
+      } catch (error) {
+        setCloudSaveStatus('error');
+        showToast(`Could not sync categories: ${error.message}`);
+      }
+    }, 500);
+
+    return () => window.clearTimeout(timeout);
+  }, [categories, cloudReady, cloudLoadError, adminAuthorized]);
 
   useEffect(() => {
-    localStorage.setItem('tb_categories', JSON.stringify(categories));
-  }, [categories]);
+    try {
+      localStorage.setItem('tb_products', JSON.stringify(products));
+    } catch (error) {
+      showToast(`Could not save this browser's product copy: ${error.message}`);
+    }
+    if (!supabase || !cloudReady || cloudLoadError || !adminAuthorized) return undefined;
+    if (lastCloudContent.current.products === stableStringify(products)) return undefined;
 
-  useEffect(() => {
-    localStorage.setItem('tb_products', JSON.stringify(products));
-  }, [products]);
+    setCloudSaveStatus('saving');
+    const timeout = window.setTimeout(async () => {
+      try {
+        setCloudSaveStatus('saving');
+        const value = await uploadImagesInRecords(products, 'products');
+        if (value !== products) setProducts(value);
+        await saveCloudRecord('products', value);
+        lastCloudContent.current.products = stableStringify(value);
+        setCloudSaveStatus('saved');
+      } catch (error) {
+        setCloudSaveStatus('error');
+        showToast(`Could not sync products: ${error.message}`);
+      }
+    }, 500);
+
+    return () => window.clearTimeout(timeout);
+  }, [products, cloudReady, cloudLoadError, adminAuthorized]);
 
   // Toast Helper
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const saveCloudRecord = async (key, value) => {
+    const { error } = await supabase
+      .from('site_content')
+      .upsert({ key, value, updated_at: new Date().toISOString() });
+    if (error) throw error;
+  };
+
+  const uploadImageData = async (dataUrl, folder) => {
+    if (!supabase) throw new Error('Supabase is not configured.');
+
+    const response = await fetch(dataUrl);
+    if (!response.ok) throw new Error('Could not read the selected image.');
+    const blob = await response.blob();
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(blob.type)) {
+      throw new Error('Only JPG, PNG, and WEBP photos can be uploaded.');
+    }
+    if (blob.size > 12 * 1024 * 1024) {
+      throw new Error('Each uploaded photo must be smaller than 12 MB.');
+    }
+    const extension = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
+    const path = `${folder}/${crypto.randomUUID()}.${extension}`;
+    const { error } = await supabase.storage
+      .from('site-media')
+      .upload(path, blob, { contentType: blob.type, cacheControl: '31536000' });
+    if (error) throw error;
+    return supabase.storage.from('site-media').getPublicUrl(path).data.publicUrl;
+  };
+
+  const uploadImagesInRecords = async (records, folder) => {
+    let changed = false;
+    const updatedRecords = await Promise.all(records.map(async (record) => {
+      let updated = record;
+      if (typeof updated.image === 'string' && updated.image.startsWith('data:image/')) {
+        updated = { ...updated, image: await uploadImageData(updated.image, folder) };
+        changed = true;
+      }
+      if (Array.isArray(updated.images)) {
+        const images = await Promise.all(updated.images.map((image) => (
+          typeof image === 'string' && image.startsWith('data:image/')
+            ? uploadImageData(image, folder)
+            : image
+        )));
+        if (images.some((image, index) => image !== updated.images[index])) {
+          updated = { ...updated, images };
+          changed = true;
+        }
+      }
+      return updated;
+    }));
+    return changed ? updatedRecords : records;
+  };
+
+  const handleAdminLogin = async (event) => {
+    event.preventDefault();
+    if (!supabase) {
+      showToast("Shared admin login is not configured yet. Add the Supabase settings first.");
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: adminEmail.trim(),
+      password: adminPassword
+    });
+    if (error || !data.user) {
+      showToast(`Admin sign-in failed: ${error?.message || 'No user was returned.'}`);
+      return;
+    }
+
+    const { data: membership, error: membershipError } = await supabase
+      .from('site_admins')
+      .select('user_id')
+      .eq('user_id', data.user.id)
+      .maybeSingle();
+
+    if (membershipError || !membership) {
+      const { error: signOutError } = await supabase.auth.signOut();
+      showToast(membershipError
+        ? `Could not verify admin access: ${membershipError.message}`
+        : signOutError
+          ? `This account is not authorized and could not be signed out: ${signOutError.message}`
+          : "This account is not authorized to manage the website.");
+      return;
+    }
+
+    setAdminUser(data.user);
+    setAdminAuthorized(true);
+    setAdminPassword('');
+    showToast("Signed in. Website updates will sync for all visitors.");
   };
 
   // WhatsApp helper
@@ -268,7 +536,9 @@ export default function TripathiBrothersApp() {
           ...previous,
           heroImage: canvas.toDataURL('image/jpeg', 0.75)
         }));
-        showToast("Hero photo updated and saved in this browser.");
+        showToast(supabase
+          ? "Hero photo selected. Uploading it for all visitors…"
+          : "Hero photo selected. Add Supabase settings to share it with visitors.");
       };
       image.src = String(reader.result);
     };
@@ -1086,37 +1356,52 @@ export default function TripathiBrothersApp() {
         <div className="max-w-7xl mx-auto px-4 sm:px-8 py-10">
           
           {!adminLoggedIn ? (
-            /* PIN LOGIN SCREEN */
+            /* SUPABASE ADMIN LOGIN SCREEN */
             <div className="max-w-md mx-auto bg-[#121212] p-8 sm:p-10 rounded-3xl border border-zinc-800 shadow-2xl space-y-6 text-center my-12">
               <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
                 <Lock className="w-8 h-8" />
               </div>
               <div className="space-y-2">
                 <h2 className="text-2xl font-bold text-white">Admin ERP Security Login</h2>
-                <p className="text-xs text-zinc-400">Enter your secure Admin PIN to manage products, pricing, and store settings.</p>
+                <p className="text-xs text-zinc-400">Sign in with the admin account configured in Supabase to publish shared website changes.</p>
               </div>
 
-              <form onSubmit={(e) => {
-                e.preventDefault();
-                if (adminPinInput === adminPin) {
-                  setAdminLoggedIn(true);
-                  showToast("Login successful! Welcome to Tripathi Brothers ERP.");
-                } else {
-                  showToast("Incorrect PIN! Please enter the valid admin PIN.");
-                }
-              }} className="space-y-4">
+              {!supabase && (
+                <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-left text-xs leading-relaxed text-amber-200">
+                  Shared publishing is not configured. Add the Supabase URL and publishable key to the Vercel environment variables, then redeploy.
+                </p>
+              )}
+              {cloudLoadError && (
+                <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-left text-xs leading-relaxed text-red-200">
+                  {cloudLoadError}
+                </p>
+              )}
+
+              <form onSubmit={handleAdminLogin} className="space-y-4">
+                <input
+                  type="email"
+                  autoComplete="username"
+                  required
+                  value={adminEmail}
+                  onChange={(e) => setAdminEmail(e.target.value)}
+                  placeholder="Admin email"
+                  className="w-full px-4 py-3.5 bg-zinc-900 border border-zinc-800 rounded-2xl text-center text-sm text-white focus:outline-none focus:border-amber-500"
+                />
                 <input
                   type="password"
-                  value={adminPinInput}
-                  onChange={(e) => setAdminPinInput(e.target.value)}
-                  placeholder="Enter Admin PIN / Password"
-                  className="w-full px-4 py-3.5 bg-zinc-900 border border-zinc-800 rounded-2xl text-center text-2xl font-mono text-amber-400 tracking-widest focus:outline-none focus:border-amber-500"
+                  autoComplete="current-password"
+                  required
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  placeholder="Admin password"
+                  className="w-full px-4 py-3.5 bg-zinc-900 border border-zinc-800 rounded-2xl text-center text-sm text-white focus:outline-none focus:border-amber-500"
                 />
                 <button
                   type="submit"
+                  disabled={!supabase || !cloudReady}
                   className="w-full py-4 bg-gradient-to-r from-amber-500 to-orange-600 text-black font-extrabold rounded-2xl shadow-lg shadow-amber-500/20 hover:opacity-95 transition"
                 >
-                  Access Admin Dashboard
+                  {!cloudReady && supabase ? 'Connecting to shared site…' : 'Sign in to Admin Dashboard'}
                 </button>
               </form>
             </div>
@@ -1136,12 +1421,26 @@ export default function TripathiBrothersApp() {
                   </div>
                 </div>
 
-                <button
-                  onClick={() => { setAdminLoggedIn(false); setAdminPinInput(''); showToast("Logged out from Admin ERP."); }}
+                <div className="flex items-center gap-4">
+                  <span className={`text-xs font-semibold ${cloudSaveStatus === 'error' ? 'text-red-400' : cloudSaveStatus === 'saving' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {cloudSaveStatus === 'error' ? 'Cloud sync failed' : cloudSaveStatus === 'saving' ? 'Syncing changes…' : 'Changes sync live'}
+                  </span>
+                  <button
+                  onClick={async () => {
+                    const { error } = await supabase.auth.signOut();
+                    if (error) {
+                      showToast(`Could not sign out: ${error.message}`);
+                      return;
+                    }
+                    setAdminAuthorized(false);
+                    setAdminPassword('');
+                    showToast("Logged out from Admin ERP.");
+                  }}
                   className="px-4 py-2 bg-zinc-800 text-zinc-300 hover:text-white rounded-xl text-xs font-bold transition border border-zinc-700"
                 >
                   Lock ERP Session
                 </button>
+                </div>
               </div>
 
               {/* ADMIN TABS NAVIGATION */}
@@ -1373,13 +1672,22 @@ export default function TripathiBrothersApp() {
                               <input
                                 type="file"
                                 multiple
-                                accept="image/*"
+                                accept="image/jpeg,image/png,image/webp"
                                 className="hidden"
                                 onChange={(e) => {
                                   const files = Array.from(e.target.files);
-                                  files.forEach(file => {
+                                  e.target.value = '';
+                                  const validFiles = files.filter((file) => {
+                                    const validType = ['image/jpeg', 'image/png', 'image/webp'].includes(file.type);
+                                    const validSize = file.size <= 12 * 1024 * 1024;
+                                    if (!validType || !validSize) {
+                                      showToast(`${file.name}: choose JPG, PNG, or WEBP under 12 MB.`);
+                                    }
+                                    return validType && validSize;
+                                  });
+                                  validFiles.forEach(file => {
                                     const reader = new FileReader();
-                                    reader.onloadend = () => {
+                                    reader.onload = () => {
                                       setProductForm(prev => ({
                                         ...prev,
                                         images: [...prev.images, reader.result]
@@ -1387,7 +1695,9 @@ export default function TripathiBrothersApp() {
                                     };
                                     reader.readAsDataURL(file);
                                   });
-                                  showToast(`${files.length} image(s) loaded into preview.`);
+                                  if (validFiles.length > 0) {
+                                    showToast(`${validFiles.length} image(s) loaded; they will sync when saved.`);
+                                  }
                                 }}
                               />
                             </label>
@@ -1518,26 +1828,35 @@ export default function TripathiBrothersApp() {
                   <div className="flex justify-between items-center bg-[#121212] p-6 rounded-3xl border border-zinc-800">
                     <div>
                       <h2 className="text-xl font-bold text-white">Category Management</h2>
-                      <p className="text-xs text-zinc-400">Add or edit housekeeping product categories with local photos.</p>
+                      <p className="text-xs text-zinc-400">Category changes and photos sync to the public site automatically.</p>
                     </div>
                     <label className="px-5 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-black font-bold rounded-2xl text-xs shadow cursor-pointer">
                       + Add Category & Upload Photo
                       <input
                         type="file"
-                        accept="image/*"
+                        accept="image/jpeg,image/png,image/webp"
                         className="hidden"
                         onChange={(e) => {
                           const file = e.target.files[0];
+                          e.target.value = '';
+                          if (file && !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                            showToast("Choose a JPG, PNG, or WEBP image.");
+                            return;
+                          }
+                          if (file && file.size > 12 * 1024 * 1024) {
+                            showToast("Category photo must be smaller than 12 MB.");
+                            return;
+                          }
                           const name = prompt("Enter new category name:");
                           if (name && file) {
                             const reader = new FileReader();
-                            reader.onloadend = () => {
-                              setCategories([...categories, { id: 'cat-' + Date.now(), name, count: 0, image: reader.result }]);
+                            reader.onload = () => {
+                              setCategories((previous) => [...previous, { id: 'cat-' + Date.now(), name, count: 0, image: reader.result }]);
                               showToast(`Category "${name}" added with uploaded image!`);
                             };
                             reader.readAsDataURL(file);
                           } else if (name) {
-                            setCategories([...categories, { id: 'cat-' + Date.now(), name, count: 0, image: 'https://images.unsplash.com/photo-1584824486509-112e4181ff6b?w=600&auto=format&fit=crop&q=80' }]);
+                            setCategories((previous) => [...previous, { id: 'cat-' + Date.now(), name, count: 0, image: 'https://images.unsplash.com/photo-1584824486509-112e4181ff6b?w=600&auto=format&fit=crop&q=80' }]);
                             showToast(`Category "${name}" added!`);
                           }
                         }}
@@ -1614,7 +1933,7 @@ export default function TripathiBrothersApp() {
                           Restore Default Photo
                         </button>
                       </div>
-                      <p className="text-xs text-zinc-500">Choose an image up to 12 MB. It will be resized before saving. Changes are saved in this browser only.</p>
+                      <p className="text-xs text-zinc-500">Choose an image up to 12 MB. It will be resized and uploaded so all visitors can see it.</p>
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-zinc-400 mb-1">Hero Banner Title</label>
@@ -1634,12 +1953,6 @@ export default function TripathiBrothersApp() {
                         className="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-white focus:outline-none focus:border-amber-500 resize-none"
                       ></textarea>
                     </div>
-                    <button
-                      onClick={() => showToast("Branding settings saved successfully!")}
-                      className="px-6 py-3 bg-amber-500 text-black font-bold rounded-xl text-xs shadow"
-                    >
-                      Save Branding Changes
-                    </button>
                   </div>
                 </div>
               )}
@@ -1651,7 +1964,7 @@ export default function TripathiBrothersApp() {
                   {/* STORE INFO SETTINGS */}
                   <div className="bg-[#121212] p-8 rounded-3xl border border-zinc-800 space-y-6">
                     <h2 className="text-xl font-bold text-white">Website & Contact Settings</h2>
-                    <p className="text-xs text-zinc-400">Update proprietor name, address, phone number, and store timing.</p>
+                    <p className="text-xs text-zinc-400">Updates are saved automatically and published to every visitor.</p>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 max-w-3xl">
                       <div>
@@ -1701,93 +2014,22 @@ export default function TripathiBrothersApp() {
                       </div>
                     </div>
 
-                    <div className="pt-2">
-                      <button
-                        onClick={() => showToast("Business settings updated successfully!")}
-                        className="px-6 py-3 bg-amber-500 text-black font-bold rounded-xl text-xs shadow"
-                      >
-                        Save Business Settings
-                      </button>
-                    </div>
                   </div>
 
-                  {/* ADMIN PASSWORD / PIN CHANGE SECTION */}
+                  {/* SHARED ADMIN ACCOUNT */}
                   <div className="bg-[#121212] p-8 rounded-3xl border border-amber-500/30 space-y-6">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
                         <Lock className="w-5 h-5" />
                       </div>
                       <div>
-                        <h2 className="text-xl font-bold text-white">Security & Admin PIN Management</h2>
-                        <p className="text-xs text-zinc-400">Change the ERP access password required to unlock the Admin Panel.</p>
+                        <h2 className="text-xl font-bold text-white">Shared Admin Account</h2>
+                        <p className="text-xs text-zinc-400">Admin accounts are managed securely in Supabase Authentication.</p>
                       </div>
                     </div>
-
-                    <form onSubmit={(e) => {
-                      e.preventDefault();
-                      const form = e.target;
-                      const current = form.elements['currPin'].value;
-                      const newPinVal = form.elements['newPin'].value;
-                      const confirmPinVal = form.elements['confirmPin'].value;
-
-                      if (current !== adminPin) {
-                        showToast("Current PIN is incorrect!");
-                        return;
-                      }
-                      if (!newPinVal || newPinVal.length < 4) {
-                        showToast("New PIN must be at least 4 digits long.");
-                        return;
-                      }
-                      if (newPinVal !== confirmPinVal) {
-                        showToast("New PIN and Confirm PIN do not match!");
-                        return;
-                      }
-
-                      setAdminPin(newPinVal);
-                      form.reset();
-                      showToast("Admin PIN updated successfully! Use your new PIN next time you log in.");
-                    }} className="space-y-4 max-w-xl">
-                      <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">Current Admin PIN</label>
-                        <input
-                          name="currPin"
-                          type="password"
-                          required
-                          placeholder="Enter current PIN"
-                          className="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-white font-mono focus:outline-none focus:border-amber-500"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-medium text-zinc-400 mb-1">New Admin PIN</label>
-                          <input
-                            name="newPin"
-                            type="password"
-                            required
-                            placeholder="Enter new PIN"
-                            className="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-white font-mono focus:outline-none focus:border-amber-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-zinc-400 mb-1">Confirm New Admin PIN</label>
-                          <input
-                            name="confirmPin"
-                            type="password"
-                            required
-                            placeholder="Re-enter new PIN"
-                            className="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-white font-mono focus:outline-none focus:border-amber-500"
-                          />
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        className="px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-600 text-black font-extrabold rounded-xl text-xs shadow-lg shadow-amber-500/20 hover:opacity-95 transition"
-                      >
-                        Update Admin PIN Security
-                      </button>
-                    </form>
+                    <p className="text-sm text-zinc-300">
+                      Signed in as <span className="font-semibold text-amber-400">{adminUser?.email}</span>
+                    </p>
                   </div>
 
                 </div>
@@ -1795,85 +2037,19 @@ export default function TripathiBrothersApp() {
 
               {/* 6. SUPABASE SQL SCHEMA TAB */}
               {adminActiveTab === 'sql' && (
-                <div className="space-y-6 animate-fadeIn bg-[#121212] p-8 rounded-3xl border border-zinc-800">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <h2 className="text-xl font-bold text-white">Supabase SQL Schema & Setup Script</h2>
-                      <p className="text-xs text-zinc-400">Run this SQL query in your Supabase dashboard to provision tables for Tripathi Brothers ERP.</p>
-                    </div>
-                    <button
-                      onClick={() => {
-                        const sqlScript = `
--- SUPABASE SQL SCHEMA FOR TRIPATHI BROTHERS ERP
-CREATE TABLE categories (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL UNIQUE,
-    image TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE products (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    price NUMERIC NOT NULL,
-    mrp NUMERIC,
-    inStock BOOLEAN DEFAULT TRUE,
-    featured BOOLEAN DEFAULT FALSE,
-    description TEXT,
-    images TEXT[],
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE store_settings (
-    id SERIAL PRIMARY KEY,
-    business_name TEXT,
-    proprietor TEXT,
-    phone TEXT,
-    address TEXT,
-    hours TEXT
-);
-                        `.trim();
-                        navigator.clipboard.writeText(sqlScript);
-                        showToast("SQL Schema copied to clipboard!");
-                      }}
-                      className="px-5 py-3 bg-amber-500 text-black font-bold rounded-xl text-xs flex items-center gap-2 shadow"
-                    >
-                      <Copy className="w-4 h-4" /> Copy SQL Script
-                    </button>
-                  </div>
-
-                  <pre className="bg-zinc-950 p-6 rounded-2xl border border-zinc-800 text-amber-400 font-mono text-xs overflow-x-auto leading-relaxed">
-                    {`-- SUPABASE SQL SCHEMA FOR TRIPATHI BROTHERS ERP
-CREATE TABLE categories (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL UNIQUE,
-    image TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE products (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    price NUMERIC NOT NULL,
-    mrp NUMERIC,
-    inStock BOOLEAN DEFAULT TRUE,
-    featured BOOLEAN DEFAULT FALSE,
-    description TEXT,
-    images TEXT[],
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE store_settings (
-    id SERIAL PRIMARY KEY,
-    business_name TEXT,
-    proprietor TEXT,
-    phone TEXT,
-    address TEXT,
-    hours TEXT
-);`}
-                  </pre>
+                <div className="space-y-4 animate-fadeIn bg-[#121212] p-8 rounded-3xl border border-zinc-800">
+                  <h2 className="text-xl font-bold text-white">Shared Website Setup</h2>
+                  <p className="text-sm leading-relaxed text-zinc-300">
+                    To sync changes across all visitors, run <code className="text-amber-400">supabase/schema.sql</code> in
+                    your Supabase SQL Editor. Then create an Auth user, add its user ID
+                    to <code className="text-amber-400">public.site_admins</code>, and set
+                    the Supabase Project URL and publishable key as Vercel environment
+                    variables.
+                  </p>
+                  <p className="text-xs leading-relaxed text-zinc-400">
+                    Full steps are in <code>SUPABASE_SETUP.md</code>. Never add the
+                    Supabase service-role/secret key to this frontend.
+                  </p>
                 </div>
               )}
 
