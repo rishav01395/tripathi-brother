@@ -21,7 +21,7 @@ const INITIAL_SETTINGS = {
   hours: "Monday - Saturday: 8:00 AM - 8:30 PM (Sunday Open for Wholesale)",
   bannerTitle: "Direct Wholesale & Retail Cleaning Solutions in Satna",
   bannerSubtitle: "Supplying top-grade mops, wipers, brushes, and liquid cleaning supplies across Madhya Pradesh with unmatched quality and pricing.",
-  heroImage: "https://images.unsplash.com/photo-1584824486509-112e4181ff6b?w=800&auto=format&fit=crop&q=80"
+  heroImage: "/hero-banner.jpeg"
 };
 
 const INITIAL_CATEGORIES = [
@@ -151,7 +151,7 @@ export default function TripathiBrothersApp() {
   // App Data States (Persisted in localStorage)
   const [settings, setSettings] = useState(() => {
     const saved = localStorage.getItem('tb_settings');
-    return saved ? JSON.parse(saved) : INITIAL_SETTINGS;
+    return saved ? { ...INITIAL_SETTINGS, ...JSON.parse(saved) } : INITIAL_SETTINGS;
   });
 
   // Dynamic Admin Password State (Persisted in localStorage)
@@ -187,6 +187,16 @@ export default function TripathiBrothersApp() {
   // Admin Editing States
   const [editingProduct, setEditingProduct] = useState(undefined);
   const [productForm, setProductForm] = useState({ name: '', category: 'Floor Mops', price: '', mrp: '', inStock: true, featured: false, description: '', images: [] });
+
+  useEffect(() => {
+    if (localStorage.getItem('tb_hero_image_version') !== '2') {
+      localStorage.setItem('tb_hero_image_version', '2');
+      setSettings((previous) => ({
+        ...previous,
+        heroImage: INITIAL_SETTINGS.heroImage
+      }));
+    }
+  }, []);
 
   // Save to localStorage whenever data changes
   useEffect(() => {
@@ -461,21 +471,13 @@ export default function TripathiBrothersApp() {
 
               {/* HERO SHOWCASE CARD */}
               <div className="lg:col-span-5 relative">
-                <div className="relative mx-auto max-w-md bg-gradient-to-b from-zinc-800 to-zinc-900 p-2 rounded-3xl border border-amber-500/30 shadow-2xl shadow-amber-500/10">
-                  <div className="relative h-[380px] rounded-2xl overflow-hidden group">
+                <div className="relative mx-auto max-w-lg bg-gradient-to-b from-zinc-800 to-zinc-900 p-2 rounded-3xl border border-amber-500/30 shadow-2xl shadow-amber-500/10">
+                  <div className="relative aspect-[3/2] rounded-2xl overflow-hidden group">
                     <img 
                       src={settings.heroImage || INITIAL_SETTINGS.heroImage}
                       alt="Tripathi Brothers Store" 
                       className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#0A0A0A] via-transparent to-transparent"></div>
-                    <div className="absolute bottom-6 left-6 right-6 space-y-2">
-                      <span className="bg-amber-500 text-black text-xs font-bold px-3 py-1 rounded-full">
-                        Proprietor: {settings.proprietor}
-                      </span>
-                      <h3 className="text-xl font-bold text-white">Direct Dispatch from Satna Store</h3>
-                      <p className="text-xs text-zinc-300">Tikuriya tola Gali number 8, Dali baba road, Satna (M.P.)</p>
-                    </div>
                   </div>
                 </div>
               </div>
