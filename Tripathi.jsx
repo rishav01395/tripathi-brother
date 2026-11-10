@@ -192,6 +192,8 @@ export default function TripathiBrothersApp() {
   const [adminActiveTab, setAdminActiveTab] = useState('overview'); // 'overview' | 'products' | 'categories' | 'branding' | 'settings' | 'sql'
   const [cloudReady, setCloudReady] = useState(!supabase);
   const [cloudLoadError, setCloudLoadError] = useState('');
+  const [cloudContentLoadError, setCloudContentLoadError] = useState('');
+  const [cloudRealtimeError, setCloudRealtimeError] = useState('');
   const [cloudSaveStatus, setCloudSaveStatus] = useState('saved');
   const lastCloudContent = useRef({ settings: null, products: null, categories: null });
   
@@ -220,12 +222,16 @@ export default function TripathiBrothersApp() {
       const { data, error } = await supabase.from('site_content').select('key, value');
       if (!active) return;
       if (error) {
-        setCloudLoadError(`Could not load shared website content: ${error.message}`);
+        const message = `Could not load shared website content: ${error.message}`;
+        setCloudLoadError(message);
+        setCloudContentLoadError(message);
         setCloudSaveStatus('error');
         setCloudReady(true);
         return;
       }
 
+      setCloudLoadError('');
+      setCloudContentLoadError('');
       const content = Object.fromEntries(data.map((row) => [row.key, row.value]));
       lastCloudContent.current = {
         settings: content.settings ? stableStringify(content.settings) : null,
@@ -259,9 +265,11 @@ export default function TripathiBrothersApp() {
         }
       })
       .subscribe((status, error) => {
-        if (active && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT')) {
-          setCloudLoadError(`Live updates could not connect${error?.message ? `: ${error.message}` : '.'}`);
-          setCloudSaveStatus('error');
+        if (!active) return;
+        if (status === 'SUBSCRIBED') {
+          setCloudRealtimeError('');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setCloudRealtimeError(`Live updates could not connect${error?.message ? `: ${error.message}` : '.'}`);
         }
       });
 
@@ -315,7 +323,7 @@ export default function TripathiBrothersApp() {
     } catch (error) {
       showToast(`Could not save this browser's settings copy: ${error.message}`);
     }
-    if (!supabase || !cloudReady || cloudLoadError || !adminAuthorized) return undefined;
+    if (!supabase || !cloudReady || cloudContentLoadError || !adminAuthorized) return undefined;
     if (lastCloudContent.current.settings === stableStringify(settings)) return undefined;
 
     setCloudSaveStatus('saving');
@@ -337,7 +345,7 @@ export default function TripathiBrothersApp() {
     }, 500);
 
     return () => window.clearTimeout(timeout);
-  }, [settings, cloudReady, cloudLoadError, adminAuthorized]);
+  }, [settings, cloudReady, cloudContentLoadError, adminAuthorized]);
 
   useEffect(() => {
     try {
@@ -345,7 +353,7 @@ export default function TripathiBrothersApp() {
     } catch (error) {
       showToast(`Could not save this browser's category copy: ${error.message}`);
     }
-    if (!supabase || !cloudReady || cloudLoadError || !adminAuthorized) return undefined;
+    if (!supabase || !cloudReady || cloudContentLoadError || !adminAuthorized) return undefined;
     if (lastCloudContent.current.categories === stableStringify(categories)) return undefined;
 
     setCloudSaveStatus('saving');
@@ -364,7 +372,7 @@ export default function TripathiBrothersApp() {
     }, 500);
 
     return () => window.clearTimeout(timeout);
-  }, [categories, cloudReady, cloudLoadError, adminAuthorized]);
+  }, [categories, cloudReady, cloudContentLoadError, adminAuthorized]);
 
   useEffect(() => {
     try {
@@ -372,7 +380,7 @@ export default function TripathiBrothersApp() {
     } catch (error) {
       showToast(`Could not save this browser's product copy: ${error.message}`);
     }
-    if (!supabase || !cloudReady || cloudLoadError || !adminAuthorized) return undefined;
+    if (!supabase || !cloudReady || cloudContentLoadError || !adminAuthorized) return undefined;
     if (lastCloudContent.current.products === stableStringify(products)) return undefined;
 
     setCloudSaveStatus('saving');
@@ -391,7 +399,7 @@ export default function TripathiBrothersApp() {
     }, 500);
 
     return () => window.clearTimeout(timeout);
-  }, [products, cloudReady, cloudLoadError, adminAuthorized]);
+  }, [products, cloudReady, cloudContentLoadError, adminAuthorized]);
 
   // Toast Helper
   const showToast = (msg) => {
@@ -1422,8 +1430,17 @@ export default function TripathiBrothersApp() {
                 </div>
 
                 <div className="flex items-center gap-4">
-                  <span className={`text-xs font-semibold ${cloudSaveStatus === 'error' ? 'text-red-400' : cloudSaveStatus === 'saving' ? 'text-amber-400' : 'text-emerald-400'}`}>
-                    {cloudSaveStatus === 'error' ? 'Cloud sync failed' : cloudSaveStatus === 'saving' ? 'Syncing changes…' : 'Changes sync live'}
+                  <span
+                    title={cloudRealtimeError || undefined}
+                    className={`text-xs font-semibold ${cloudSaveStatus === 'error' ? 'text-red-400' : cloudSaveStatus === 'saving' || cloudRealtimeError ? 'text-amber-400' : 'text-emerald-400'}`}
+                  >
+                    {cloudSaveStatus === 'error'
+                      ? 'Cloud sync failed'
+                      : cloudSaveStatus === 'saving'
+                        ? 'Syncing changes…'
+                        : cloudRealtimeError
+                          ? 'Saved; visitors may need refresh'
+                          : 'Shared site up to date'}
                   </span>
                   <button
                   onClick={async () => {

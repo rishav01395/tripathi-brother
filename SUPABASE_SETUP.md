@@ -45,7 +45,8 @@ Open the deployed site's Admin ERP tab and sign in with the account created in
 Supabase. New product/category/branding/contact changes are synced to Supabase;
 visitors receive updates in real time. Images are stored in the public
 `site-media` bucket, while uploads and edits require the allowlisted admin
-account.
+account. If a visitor's live-update connection is temporarily unavailable, the
+saved changes are still shared, but that visitor may need to refresh the page.
 
 This app retains existing browser-local content as the initial values on the
 admin device. The first signed-in admin session syncs those current values to
