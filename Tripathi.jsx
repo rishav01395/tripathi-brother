@@ -5,7 +5,7 @@ import {
   Search, Filter, ArrowUpDown, ChevronRight, MessageCircle, 
   Lock, Settings, Plus, Edit, Trash2, Image as ImageIcon, 
   CheckCircle, AlertCircle, X, Menu, ExternalLink, RefreshCw, 
-  Database, Copy, Check, Eye, Package, DollarSign, Layers,
+  Database, Copy, Check, Eye, Package, DollarSign, Layers, Minus,
   SlidersHorizontal, Sparkles, Award, Clock, Share2, Upload
 } from 'lucide-react';
 
@@ -177,6 +177,13 @@ export default function TripathiBrothersApp() {
   const [priceModeNumerical, setPriceModeNumerical] = useState(true);
   const [selectedProductModal, setSelectedProductModal] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
+  const [cart, setCart] = useState([]);
+  const [cartOpen, setCartOpen] = useState(false);
+  const cartItems = cart
+    .map((item) => ({ ...item, product: products.find((product) => product.id === item.productId) }))
+    .filter((item) => item.product);
+  const cartCount = cartItems.reduce((total, item) => total + item.quantity, 0);
+  const cartTotal = cartItems.reduce((total, item) => total + Number(item.product.price || 0) * item.quantity, 0);
 
   // Filter & Search States for Products Page
   const [searchQuery, setSearchQuery] = useState('');
@@ -507,6 +514,51 @@ export default function TripathiBrothersApp() {
     window.open(url, '_blank');
   };
 
+  const addToCart = (product) => {
+    if (!product.inStock) {
+      showToast('This product is currently out of stock.');
+      return;
+    }
+
+    setCart((currentCart) => {
+      const existingItem = currentCart.find((item) => item.productId === product.id);
+      return existingItem
+        ? currentCart.map((item) => item.productId === product.id
+          ? { ...item, quantity: item.quantity + 1 }
+          : item)
+        : [...currentCart, { productId: product.id, quantity: 1 }];
+    });
+    showToast(`${product.name} added to cart.`);
+  };
+
+  const changeCartQuantity = (productId, change) => {
+    setCart((currentCart) => currentCart
+      .map((item) => item.productId === productId
+        ? { ...item, quantity: item.quantity + change }
+        : item)
+      .filter((item) => item.quantity > 0));
+  };
+
+  const orderCartOnWhatsApp = () => {
+    if (cartItems.length === 0) return;
+
+    const itemLines = cartItems.map(({ product, quantity }) => (
+      priceModeNumerical
+        ? `• ${product.name} × ${quantity} — ₹${Number(product.price || 0) * quantity}`
+        : `• ${product.name} × ${quantity}`
+    ));
+    const message = [
+      `Hello ${settings.businessName}, I would like to place an order:`,
+      '',
+      ...itemLines,
+      ...(priceModeNumerical ? ['', `Estimated total: ₹${cartTotal}`] : []),
+      '',
+      'Please confirm availability and delivery details.',
+    ].join('\n');
+    const url = `https://wa.me/91${settings.phone}?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank');
+  };
+
   const handleHeroImageUpload = (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -635,11 +687,24 @@ export default function TripathiBrothersApp() {
             ))}
           </nav>
 
-          {/* ACTION BUTTON */}
-          <div className="hidden sm:flex items-center gap-3">
+          {/* ACTION BUTTONS */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setCartOpen(true)}
+              className="relative flex items-center gap-2 rounded-full border border-zinc-800 bg-[#121212] p-3 text-zinc-200 transition hover:border-amber-500/50 hover:text-amber-400 sm:px-4 sm:py-2.5"
+              aria-label={`Open cart, ${cartCount} ${cartCount === 1 ? 'item' : 'items'}`}
+            >
+              <ShoppingBag className="h-5 w-5" />
+              <span className="hidden text-sm font-bold sm:inline">Cart</span>
+              {cartCount > 0 && (
+                <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-black text-black">
+                  {cartCount}
+                </span>
+              )}
+            </button>
             <button
               onClick={() => openWhatsApp()}
-              className="relative group overflow-hidden rounded-full p-[1px] focus:outline-none"
+              className="relative hidden group overflow-hidden rounded-full p-[1px] focus:outline-none sm:block"
             >
               <span className="absolute inset-0 bg-gradient-to-r from-emerald-500 via-green-400 to-emerald-600 rounded-full animate-pulse"></span>
               <span className="relative px-5 py-2.5 bg-[#0A0A0A] rounded-full flex items-center gap-2 text-sm font-bold text-emerald-400 group-hover:bg-emerald-950/30 transition">
@@ -851,8 +916,10 @@ export default function TripathiBrothersApp() {
                       <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full text-xs font-semibold text-amber-400 border border-amber-500/20">
                         {product.category}
                       </div>
-                      <div className="absolute top-3 right-3 bg-emerald-500/90 text-black text-[10px] font-extrabold px-2 py-0.5 rounded-md">
-                        In Stock Satna
+                      <div className={`absolute top-3 right-3 text-[10px] font-extrabold px-2 py-0.5 rounded-md ${
+                        product.inStock ? 'bg-emerald-500/90 text-black' : 'bg-red-500 text-white'
+                      }`}>
+                        {product.inStock ? 'In Stock Satna' : 'Out of Stock'}
                       </div>
                     </div>
                     <div className="p-5 space-y-2">
@@ -875,6 +942,15 @@ export default function TripathiBrothersApp() {
                       )}
                     </div>
                     <div className="flex gap-2">
+                      <button
+                        onClick={() => addToCart(product)}
+                        disabled={!product.inStock}
+                        className="p-2.5 rounded-xl bg-amber-500 text-black transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+                        title={product.inStock ? 'Add to cart' : 'Out of stock'}
+                        aria-label={`Add ${product.name} to cart`}
+                      >
+                        <ShoppingBag className="w-4 h-4" />
+                      </button>
                       <button
                         onClick={() => setSelectedProductModal(product)}
                         className="p-2.5 rounded-xl bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700 transition"
@@ -1123,6 +1199,15 @@ export default function TripathiBrothersApp() {
                         )}
                       </div>
                       <div className="flex gap-2">
+                        <button
+                          onClick={() => addToCart(product)}
+                          disabled={!product.inStock}
+                          className="px-3 py-2.5 rounded-xl bg-amber-500 text-black hover:bg-amber-400 transition disabled:cursor-not-allowed disabled:opacity-40 flex items-center gap-1.5 text-xs font-bold"
+                          title={product.inStock ? 'Add to cart' : 'Out of stock'}
+                          aria-label={`Add ${product.name} to cart`}
+                        >
+                          <ShoppingBag className="w-4 h-4" /> Add
+                        </button>
                         <button
                           onClick={() => setSelectedProductModal(product)}
                           className="p-2.5 rounded-xl bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700 transition"
@@ -2116,19 +2201,152 @@ export default function TripathiBrothersApp() {
                     <CheckCircle className="w-4 h-4" /> {selectedProductModal.inStock ? 'In Stock at Satna Store' : 'Out of Stock'}
                   </div>
 
-                  <button
-                    onClick={() => {
-                      openWhatsApp(selectedProductModal.name);
-                      setSelectedProductModal(null);
-                    }}
-                    className="w-full py-4 bg-gradient-to-r from-emerald-600 to-green-600 text-white rounded-2xl font-extrabold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 hover:opacity-95 transition"
-                  >
-                    <MessageCircle className="w-5 h-5 fill-white" /> Enquire / Order on WhatsApp
-                  </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      onClick={() => {
+                        addToCart(selectedProductModal);
+                        setSelectedProductModal(null);
+                      }}
+                      disabled={!selectedProductModal.inStock}
+                      className="w-full py-4 bg-amber-500 text-black rounded-2xl font-extrabold flex items-center justify-center gap-2 hover:bg-amber-400 transition disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <ShoppingBag className="w-5 h-5" /> Add to Cart
+                    </button>
+                    <button
+                      onClick={() => {
+                        openWhatsApp(selectedProductModal.name);
+                        setSelectedProductModal(null);
+                      }}
+                      className="w-full py-4 bg-gradient-to-r from-emerald-600 to-green-600 text-white rounded-2xl font-extrabold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 hover:opacity-95 transition"
+                    >
+                      <MessageCircle className="w-5 h-5 fill-white" /> Enquire on WhatsApp
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* CART */}
+      {cartOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => setCartOpen(false)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cart-title"
+            className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-amber-500/30 bg-[#121212] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 p-5 sm:p-6">
+              <div>
+                <h2 id="cart-title" className="text-xl font-extrabold text-white sm:text-2xl">Your Cart</h2>
+                <p className="mt-1 text-xs text-zinc-400">{cartCount} {cartCount === 1 ? 'item' : 'items'}</p>
+              </div>
+              <button
+                onClick={() => setCartOpen(false)}
+                className="rounded-full bg-zinc-900 p-2.5 text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+                aria-label="Close cart"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {cartItems.length === 0 ? (
+              <div className="space-y-3 px-6 py-14 text-center">
+                <ShoppingBag className="mx-auto h-12 w-12 text-zinc-600" />
+                <h3 className="text-lg font-bold text-white">Your cart is empty</h3>
+                <p className="text-sm text-zinc-400">Add products from the catalogue to place a combined WhatsApp order.</p>
+                <button
+                  onClick={() => {
+                    setCartOpen(false);
+                    setActiveTab('products');
+                  }}
+                  className="mt-2 rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-bold text-black transition hover:bg-amber-400"
+                >
+                  Browse Products
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-3 overflow-y-auto p-4 sm:p-6">
+                  {cartItems.map(({ product, quantity }) => (
+                    <div key={product.id} className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-3 sm:gap-4 sm:p-4">
+                      <img
+                        src={product.images?.[0] || 'https://images.unsplash.com/photo-1584824486509-112e4181ff6b?w=800&auto=format&fit=crop&q=80'}
+                        alt=""
+                        className="h-16 w-16 shrink-0 rounded-xl object-cover sm:h-20 sm:w-20"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <h3 className="line-clamp-2 text-sm font-bold text-white">{product.name}</h3>
+                        <p className="mt-1 text-xs text-zinc-400">
+                          {priceModeNumerical ? `₹${product.price} each` : 'Price on request'}
+                        </p>
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            onClick={() => changeCartQuantity(product.id, -1)}
+                            className="rounded-lg border border-zinc-700 p-1.5 text-zinc-300 transition hover:border-amber-500/50 hover:text-amber-400"
+                            aria-label={`Decrease ${product.name} quantity`}
+                          >
+                            <Minus className="h-3.5 w-3.5" />
+                          </button>
+                          <span className="min-w-6 text-center text-sm font-bold text-white">{quantity}</span>
+                          <button
+                            onClick={() => changeCartQuantity(product.id, 1)}
+                            className="rounded-lg border border-zinc-700 p-1.5 text-zinc-300 transition hover:border-amber-500/50 hover:text-amber-400"
+                            aria-label={`Increase ${product.name} quantity`}
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-3">
+                        {priceModeNumerical && (
+                          <span className="text-sm font-extrabold text-amber-400">₹{Number(product.price || 0) * quantity}</span>
+                        )}
+                        <button
+                          onClick={() => setCart((currentCart) => currentCart.filter((item) => item.productId !== product.id))}
+                          className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-red-500/10 hover:text-red-400"
+                          aria-label={`Remove ${product.name} from cart`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="space-y-4 border-t border-zinc-800 p-4 sm:p-6">
+                  {priceModeNumerical ? (
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-semibold text-zinc-400">Estimated total</span>
+                      <span className="text-xl font-black text-amber-400">₹{cartTotal}</span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-zinc-400">Prices will be confirmed by the store on WhatsApp.</p>
+                  )}
+                  <div className="flex flex-col-reverse gap-3 sm:flex-row">
+                    <button
+                      onClick={() => setCart([])}
+                      className="rounded-xl border border-zinc-700 px-4 py-3 text-sm font-bold text-zinc-300 transition hover:border-red-500/50 hover:text-red-400"
+                    >
+                      Clear Cart
+                    </button>
+                    <button
+                      onClick={orderCartOnWhatsApp}
+                      className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-500"
+                    >
+                      <MessageCircle className="h-5 w-5 fill-white" /> Order on WhatsApp
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
         </div>
       )}
 
